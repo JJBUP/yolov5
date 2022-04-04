@@ -305,6 +305,7 @@ class DetectMultiBackend(nn.Module):
         if pt:  # PyTorch
             model = attempt_load(weights if isinstance(weights, list) else w, map_location=device)
             stride = max(int(model.stride.max()), 32)  # model stride
+            # 判断model对象是否包含 module属性，我们以 模型中加载的那么为准而不去使用自己设定的data
             names = model.module.names if hasattr(model, 'module') else model.names  # get class names
             model.half() if fp16 else model.float()
             self.model = model  # explicitly assign for to(), cpu(), cuda(), half()
@@ -463,7 +464,7 @@ class DetectMultiBackend(nn.Module):
         return (y, []) if val else y
 
     def warmup(self, imgsz=(1, 3, 640, 640)):
-        # Warmup model by running inference once
+        # Warmup model by running inference once,验证环节的warmup，第一次执行会有点慢，所以造一个0图片进行第一轮进行热身
         if any((self.pt, self.jit, self.onnx, self.engine, self.saved_model, self.pb)):  # warmup types
             if self.device.type != 'cpu':  # only warmup GPU models
                 im = torch.zeros(*imgsz, dtype=torch.half if self.fp16 else torch.float, device=self.device)  # input

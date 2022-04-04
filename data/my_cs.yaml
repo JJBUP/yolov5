@@ -1,0 +1,16 @@
+# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
+# Example usage: python train.py --data mycsgo.yaml
+#
+# yolov5
+#   └── datasets
+#         └── cs_datasets  ← datasets here
+
+
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+path: ./datasets/cs_datasets  # dataset root dir
+train: images/train  # train images (relative to 'path') 118287 images
+val: images/val  # val images (relative to 'path') 5000 images
+
+# Classes
+nc: 4  # number of classes
+names: [ "terrorist_head","terrorist_body","Elite_head","Elite_body" ]  # class names

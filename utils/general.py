@@ -660,7 +660,7 @@ def segments2boxes(segments):
     boxes = []
     for s in segments:
         x, y = s.T  # segment xy
-        boxes.append([x.min(), y.min(), x.max(), y.max()])  # cls, xyxy
+        boxes.append([x.min(), y.min(), x.max(), y.max()])  # cls, xyxy,取segment中x最大最小和y中最大最小即可获得xy1xy2形式
     return xyxy2xywh(np.array(boxes))  # cls, xywh
 
 

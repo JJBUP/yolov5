@@ -57,9 +57,10 @@ from utils.metrics import fitness
 from utils.plots import plot_evolve, plot_labels
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 
-LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
-RANK = int(os.getenv('RANK', -1))
-WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
+# https://pytorch.org/docs/stable/elastic/run.html
+LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # 环境变量中获得进程 本地 排名
+RANK = int(os.getenv('RANK', -1))  # 环境变量中进程全局排名
+WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))  # 世界大小，工作进程的总数量
 
 
 def train(hyp,  # path/to/hyp.yaml or hyp dictionary
@@ -92,7 +93,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     # Loggers
     data_dict = None
     if RANK in [-1, 0]:
-        loggers = Loggers(save_dir, weights, opt, hyp, LOGGER)  # loggers instance
+        loggers = Loggers(save_dir, weights, opt, hyp, LOGGER)  # loggers instance 用于保存打印超参数
         if loggers.wandb:
             data_dict = loggers.wandb.data_dict
             if resume:
@@ -115,16 +116,19 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     is_coco = isinstance(val_path, str) and val_path.endswith('coco/val2017.txt')  # COCO dataset
 
     # Model
-    check_suffix(weights, '.pt')  # check weights
-    pretrained = weights.endswith('.pt')
+    check_suffix(weights, '.pt')  # check weights 检查权重是否为pt结尾
+    pretrained = weights.endswith('.pt')  # 如果是 pt结尾则返回TRUE
     if pretrained:
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location='cpu')  # load checkpoint to CPU to avoid CUDA memory leak
+        # 初始化模型
         model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        #
         exclude = ['anchor'] if (cfg or hyp.get('anchors')) and not resume else []  # exclude keys
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
+        # 加载模型参数
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
     else:
@@ -261,10 +265,11 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     hyp['cls'] *= nc / 80 * 3 / nl  # scale to classes and layers
     hyp['obj'] *= (imgsz / 640) ** 2 * 3 / nl  # scale to image size and layers
     hyp['label_smoothing'] = opt.label_smoothing
+    # 将多种保存在模型中，下次可以直接读取
     model.nc = nc  # attach number of classes to model
     model.hyp = hyp  # attach hyperparameters to model
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
-    model.names = names
+    model.names = names #将name保存在模型中，下次可以直接读取
 
     # Start training
     t0 = time.time()
@@ -453,43 +458,74 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
 def parse_opt(known=False):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default=ROOT / 'yolov5s.pt', help='initial weights path')
-    parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
-    parser.add_argument('--data', type=str, default=ROOT / 'data/coco128.yaml', help='dataset.yaml path')
-    parser.add_argument('--hyp', type=str, default=ROOT / 'data/hyps/hyp.scratch-low.yaml', help='hyperparameters path')
-    parser.add_argument('--epochs', type=int, default=300)
+    # 指定设备
+    parser.add_argument('--device', default='0,1,2,3', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    # 开启多少个线程工作
+    parser.add_argument('--workers', type=int, default=8, help='max dataloader workers (per RANK in DDP mode)')
+    # mini-batch-size大小
     parser.add_argument('--batch-size', type=int, default=16, help='total batch size for all GPUs, -1 for autobatch')
-    parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='train, val image size (pixels)')
+    # img大小，rect开启后是最大变长的大小
+    parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=1920, help='train, val image size (pixels)')
+    # 要加载的预训练权重
+    parser.add_argument('--weights', type=str, default=ROOT / 'yolov5s.pt', help='initial weights path')
+    # cfg文件，也就是模型要加载的ymal文件
+    parser.add_argument('--cfg', type=str, default='models/yolov5s.yaml', help='model.yaml path')
+    # 数据集的保存位置，通过data文件夹下的 ymal指定
+    parser.add_argument('--data', type=str, default=ROOT / 'data/my_cs.yaml', help='dataset.yaml path')
+    # 训练的超参数文件，针对的是coco数据集从头开始（为什么是从头，因为yolov5提供了能够保存中断后超参数的方法，此超参数是进行到一半的）
+    parser.add_argument('--hyp', type=str, default=ROOT / 'data/hyps/hyp.scratch-low.yaml', help='hyperparameters path')
+    # 训练epoch
+    parser.add_argument('--epochs', type=int, default=300)
+    # 训练过程中数据保存位置
+    parser.add_argument('--project', default=ROOT / 'runs/train', help='save to project/name')
+    # 'runs/train' 文件夹下exp
+    parser.add_argument('--name', default='exp', help='save to project/name')
+    # 只保存一个 exp文件不会增加
+    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+    # 是否开启矩形训练，能够填充最少的黑边，但是batch内容是不变的，所以一般在验证时使用
     parser.add_argument('--rect', action='store_true', help='rectangular training')
+    # 是否从最近的一个训练上继续训练default要指定为训练权重的位置，需要自己训练的run/train文件夹下，因为他会读取文件中的一些相关配置
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
+    # 只保存最后一个epoch的权重
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
+    # 只在最后一个epoch 进行测试
     parser.add_argument('--noval', action='store_true', help='only validate final epoch')
+    # 是否使用锚框，--noautoanchor 后将会自动生成锚框，而不是用准备好的锚框
     parser.add_argument('--noautoanchor', action='store_true', help='disable AutoAnchor')
+    # 使用遗传算法寻找超参数
     parser.add_argument('--evolve', type=int, nargs='?', const=300, help='evolve hyperparameters for x generations')
     parser.add_argument('--bucket', type=str, default='', help='gsutil bucket')
+    # 将图片缓存到本地磁盘
     parser.add_argument('--cache', type=str, nargs='?', const='ram', help='--cache images in "ram" (default) or "disk"')
+    # 使用FOCAL loss ，对学习不好的图片夹大学习力度
     parser.add_argument('--image-weights', action='store_true', help='use weighted image selection for training')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    # 多尺度学习
     parser.add_argument('--multi-scale', action='store_true', help='vary img-size +/- 50%%')
+    # 单类别训练
     parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
+    # 选择梯度下降算法
     parser.add_argument('--optimizer', type=str, choices=['SGD', 'Adam', 'AdamW'], default='SGD', help='optimizer')
+    # 多卡操作，需要同步Batch Normalization(syncbn)作用
     parser.add_argument('--sync-bn', action='store_true', help='use SyncBatchNorm, only available in DDP mode')
-    parser.add_argument('--workers', type=int, default=8, help='max dataloader workers (per RANK in DDP mode)')
-    parser.add_argument('--project', default=ROOT / 'runs/train', help='save to project/name')
-    parser.add_argument('--name', default='exp', help='save to project/name')
-    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
+    # 将batch size /4，并且将4张图片拼接成一个更大的图片，作者说这样效果更好，如：16*3*640*640-->4*3*1280*1280,在一个batch中按0.5的概率使用
     parser.add_argument('--quad', action='store_true', help='quad dataloader')
+    # 是否使用余弦退火方式训练
     parser.add_argument('--cos-lr', action='store_true', help='cosine LR scheduler')
+    # 标签平滑
     parser.add_argument('--label-smoothing', type=float, default=0.0, help='Label smoothing epsilon')
     parser.add_argument('--patience', type=int, default=100, help='EarlyStopping patience (epochs without improvement)')
+    #是否开启冻结训练，用列表存储 ，backbone 为10层 指定那些需要冻结
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone=10, first3=0 1 2')
+    # 使用wandb记录模型
     parser.add_argument('--save-period', type=int, default=-1, help='Save checkpoint every x epochs (disabled if < 1)')
+    # DistributedDataParallel 单机多卡训练，一般不改动。
     parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
 
     # Weights & Biases arguments
     parser.add_argument('--entity', default=None, help='W&B: Entity')
     parser.add_argument('--upload_dataset', nargs='?', const=True, default=False, help='W&B: Upload data, "val" option')
     parser.add_argument('--bbox_interval', type=int, default=-1, help='W&B: Set bounding-box image logging interval')
+    # 没有用到的参数 ，数据集标识，默认下载最新数据集
     parser.add_argument('--artifact_alias', type=str, default='latest', help='W&B: Version of dataset artifact to use')
 
     opt = parser.parse_known_args()[0] if known else parser.parse_args()

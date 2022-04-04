@@ -32,6 +32,8 @@ warnings.filterwarnings('ignore', message='User provided device_type of \'cuda\'
 @contextmanager
 def torch_distributed_zero_first(local_rank: int):
     # Decorator to make all processes in distributed training wait for each local_master to do something
+    # Decorator让分布式培训中的所有进程等待每个 本地最优先进程 处理事情
+    # 加载模型前后用dist.barrier()来同步不同进程间的快慢
     if local_rank not in [-1, 0]:
         dist.barrier(device_ids=[local_rank])
     yield
