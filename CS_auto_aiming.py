@@ -103,49 +103,133 @@ def scale_box_coords(img_scaled_shape, coords, img_orgin_shape, ratio_pad=None):
 
 
 @torch.no_grad()
-def realtime_detect(
-        img_scaled_size=(640, 640),  # inference size (height, width)
-        conf_thres=0.25,  # confidence threshold
-        iou_thres=0.45,  # NMS IOU threshold
-        max_det=30,  # maximum detections per image
+def realtime_detect_crop(
+        img_scaled_size=(640, 640),  # 模型进行推断时的尺寸
+        conf_thres=0.25,  # 置信度 的过滤阈值
+        iou_thres=0.45,  # NMS交并比阈值
+        max_det=30,  # 图片中最大检测数量
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
         classes=None,  # filter by class: --class 0, or --class 0 2 3
         agnostic_nms=False,  # class-agnostic NMS
-        img=None,
-        model=None,
-        screen_size=None
+        img=None,  # 抓取屏幕图片
+        model=None,  # 传入模型
+        screen_size=None  # 当前屏幕分辨率，可能与抓取的屏幕图片不同
 ):
+    # 如果不存在图片，返回none
     if img == None:
         return None
+    # 1. 将图片裁剪，我们只要屏幕中间2/1的尺寸
     iw, ih = img.size
-    print("imgsize:{} * {}".format(iw,ih))
-    img_scaled = letterbox_image(image=img, size=img_scaled_size)
+    print("imgsize:{} * {}".format(iw, ih))
+    img_crop = img.crop(box=(iw / 4, ih / 4, iw * 3 / 4, ih * 3 / 4))
+
+    # matplotlib.use('TkAgg')  # 大小写无所谓 tkaGg ,TkAgg 都行
+    # plt.figure("Image")  # 图像窗口名称
+    # plt.imshow(img_crop)
+    # plt.show()
+
+    # 2. 图片缩放到模型指定尺寸
+    img_scaled = letterbox_image(image=img_crop, size=img_scaled_size)
+    # matplotlib.use('TkAgg')  # 大小写无所谓 tkaGg ,TkAgg 都行
+    # plt.figure("Image")  # 图像窗口名称
+    # plt.imshow(img_scaled)
+    # plt.show()
+
     # t1 = time_sync()
+    # 3.转变魏tensor并放到GPU上，
     to_tensor = torchvision.transforms.ToTensor()
     img_scaled = to_tensor(img_scaled).to(device)
     img_scaled = img_scaled.half() if model.fp16 else img_scaled.float()  # uint8 to fp16/32
     if len(img_scaled.shape) == 3:
-        img_scaled = img_scaled[None]  # expand for batch dim
-    # t2 = time_sync()
-    # Inference
+        img_scaled = img_scaled[None]  # 添加batch 维度
+
+    # 4.进行预测
     pred = model(img_scaled)  # [batch,3*ny*nx ,xywh o c ]
     # t3 = time_sync()
+
+    # 5. 非极大值抑制
     # NMS # [batch,3*ny*nx ,xywh o c ] -->[batch,3*ny*nx ,xyxy o c ]
     pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
     # 单张图片检测，我们去掉batch [3*ny*nx ,xywh o c ]
     pred = pred[0]
     pred = xyxy2xywh(pred)  # [batch,3*ny*nx ,xyxy o c ]-->[batch,3*ny*nx ,xywh o c ]
+
+    # 6. 将图片恢复到原尺寸（恢复到屏幕原尺寸，而不是原图的尺寸，因为二者可能不同）
     if len(pred) and screen_size:
-        # img_orgin_shape = torch.tensor(img.size) 恢复到原图大小，但是发现分辨率和抓取图片大小不一样 所以放大到屏幕分辨率才行
-        img_scaled_shape = torch.tensor(img_scaled_size)
-        pred = scale_box_coords(img_scaled_shape=img_scaled_shape, coords=pred, img_orgin_shape=screen_size)
+        # 恢复到原图大小，但是发现分辨率和抓取图片大小不一样 所以放大到屏幕分辨率才行
+        sw, sh = screen_size  # 屏幕原尺寸
+        sw_crop, sh_crop = sw / 2, sh / 2  # 裁剪后屏幕尺寸
+        # 将裁减图片 将相对模型输入的预测 恢复到 相对屏幕尺寸裁剪后的 大小
+        pred = scale_box_coords(img_scaled_shape=img_scaled_size, coords=pred, img_orgin_shape=(sw_crop, sh_crop))
+        sw_offset, sh_offset = sw / 4, sh / 4
+        # 将裁剪后的部分的偏移量
+        pred[:, [0]] += sw_offset  # x padding
+        pred[:, [1]] += sh_offset  # y padding
         # print(pred)
     else:
+        # 非极大值抑制后没有任何预测输出
         return None
     return pred
     # Second-stage classifier (optional)
     # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
 
+@torch.no_grad()
+def realtime_detect(
+        img_scaled_size=(320,320),  # 模型进行推断时的尺寸
+        conf_thres=0.25,  # 置信度 的过滤阈值
+        iou_thres=0.45,  # NMS交并比阈值
+        max_det=30,  # 图片中最大检测数量
+        device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
+        classes=None,  # filter by class: --class 0, or --class 0 2 3
+        agnostic_nms=False,  # class-agnostic NMS
+        img=None,  # 抓取屏幕图片
+        model=None,  # 传入模型
+        screen_size=None  # 当前屏幕分辨率，可能与抓取的屏幕图片不同
+):
+    # 如果不存在图片，返回none
+    if img == None:
+        return None
+    # 1. 将图片裁剪，这里是原图
+    iw, ih = img.size
+    print("imgsize:{} * {}".format(iw, ih))
+
+    # 2. 图片缩放到模型指定尺寸
+    img_scaled = letterbox_image(image=img, size=img_scaled_size)
+    # matplotlib.use('TkAgg')  # 大小写无所谓 tkaGg ,TkAgg 都行
+    # plt.figure("Image")  # 图像窗口名称
+    # plt.imshow(img_scaled)
+    # plt.show()
+
+    # t1 = time_sync()
+    # 3.转变魏tensor并放到GPU上，
+    to_tensor = torchvision.transforms.ToTensor()
+    img_scaled = to_tensor(img_scaled).to(device)
+    img_scaled = img_scaled.half() if model.fp16 else img_scaled.float()  # uint8 to fp16/32
+    if len(img_scaled.shape) == 3:
+        img_scaled = img_scaled[None]  # 添加batch 维度
+
+    # 4.进行预测
+    pred = model(img_scaled)  # [batch,3*ny*nx ,xywh o c ]
+    # t3 = time_sync()
+
+    # 5. 非极大值抑制
+    # NMS # [batch,3*ny*nx ,xywh o c ] -->[batch,3*ny*nx ,xyxy o c ]
+    pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+    # 单张图片检测，我们去掉batch [3*ny*nx ,xywh o c ]
+    pred = pred[0]
+    pred = xyxy2xywh(pred)  # [batch,3*ny*nx ,xyxy o c ]-->[batch,3*ny*nx ,xywh o c ]
+
+    # 6. 将图片恢复到原尺寸（恢复到屏幕原尺寸，而不是原图的尺寸，因为二者可能不同）
+    if len(pred) and screen_size:
+        # 恢复到原图大小，但是发现分辨率和抓取图片大小不一样 所以放大到屏幕分辨率才行
+        pred = scale_box_coords(img_scaled_shape=img_scaled_size, coords=pred, img_orgin_shape=screen_size)
+        # print(pred)
+    else:
+        # 非极大值抑制后没有任何预测输出
+        return None
+    return pred
+    # Second-stage classifier (optional)
+    # pred = utils.general.apply_classifier(pred, classifier_model, im, im0s)
 
 # 抓取屏幕图片
 def image_grab():
@@ -179,7 +263,8 @@ def main():
     while True:
         width, height = pyautogui.size()
         print("屏幕分辨率：{} * {}".format(width, height))
-        pred = realtime_detect(
+        # pred = realtime_detect(
+        pred = realtime_detect_crop(
             device=device,
             model=model,
             img=image_grab(),
@@ -192,11 +277,12 @@ def main():
             is_body = pred[:, 5] == 1
             if True in is_head:
                 head_pred = pred[is_head]
-                pyautogui.moveTo(head_pred[0][0], head_pred[0][1], duration=0.1)
-                pyautogui.click()
+                pyautogui.moveTo(head_pred[0][0], head_pred[0][1], duration=0.001)
+                pyautogui.doubleClick()
+                # print("鼠标位置：x{} , y{}".format(head_pred[0][0], head_pred[0][1]))
             elif True in is_body:
                 # 没有就选择身子的第一个
-                pyautogui.moveTo(pred[0][0], pred[0][1], duration=0.1)
+                pyautogui.moveTo(pred[0][0], pred[0][1], duration=0.001)
                 pyautogui.doubleClick()
 
 
